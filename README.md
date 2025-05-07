@@ -55,9 +55,9 @@ When using [Oh My Zsh](https://ohmyz.sh), there is a recommended location to sto
 
 ```
 git clone github.com/Emptyless/go-zsh-autocomplete
-echo '#!/bin/sh\n' > ~/.oh-my-zsh/completions
-cat go-zsh-autocomplete/_go-zsh-autocomplete.zsh >> ~/.oh-my-zsh/completions
-chmod +x ~/.oh-my-zsh/completions
+echo '#!/bin/sh\n' > ~/.oh-my-zsh/completions/_go-zsh-autocomplete.zsh
+cat ./go-zsh-autocomplete/_go-zsh-autocomplete.zsh >> ~/.oh-my-zsh/completions/_go-zsh-autocomplete.zsh
+chmod +x ~/.oh-my-zsh/completions/_go-zsh-autocomplete.zsh
 ```
 
 ## Debugging
@@ -65,7 +65,7 @@ chmod +x ~/.oh-my-zsh/completions
 Ensure that the `$ZSH_GO_COMP_DEBUG_FILE` variable is set to some filepath, e.g.
 
 ```
-export $ZSH_GO_COMP_DEBUG_FILE=debug.txt
+export ZSH_GO_COMP_DEBUG_FILE=debug.txt
 go get github.com/<tab>
 ```
 
@@ -75,5 +75,5 @@ Add the zsh shebang before development and set the debug variable
 
 ```
 #!/bin/zsh
-export $ZSH_GO_COMP_DEBUG_FILE=debug.txt
+export ZSH_GO_COMP_DEBUG_FILE=debug.txt
 ```
