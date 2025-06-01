@@ -40,6 +40,10 @@ _go() {
     __go_debug "last char is '@' so loading possible versions"
     local repo
     repo="$(__parse_repo "${lastParam%"${match[1]}"}")"
+    if [ "$?" = 1 ]; then
+      zle -M "autocompletion requires a known vcs format (github.com) or a repository with a '.git' URI part, write @version manually"
+      return 1
+    fi
 
     nested=${lastParam##"${repo}"}
     nested=${nested##.git}
@@ -145,8 +149,19 @@ __parse_repo() {
   if [[ "${repo}" =~ '(github\.com\/([a-zA-Z0-9\-\_]+)\/([a-zA-Z0-9\-\_]+))' ]]; then
     __go_debug "repo is github.com format"
     repo=$(cut -d'/' -f1 -f2 -f3 <<<"${repo}")
-    fi
+    repo=${repo%.git*}
+    print -r -- "$repo"
+    return
+  fi
+
+  #fallback on repo's with .git suffix
+  before="${repo}"
   repo=${repo%.git*}
+  if [ "${before}" = "${repo}" ]; then
+     __go_debug "repo is unknown git format"
+     exit 1
+  fi
+
   print -r -- "$repo"
 }
 
