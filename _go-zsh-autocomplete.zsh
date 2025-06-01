@@ -36,20 +36,15 @@ _go() {
   lastChar=${lastParam[-1]}
   __go_debug "lastChar: ${lastChar}"
 
-  if [[ "${words[${CURRENT}]}" =~ @.* ]]; then
+  if [[ "${words[${CURRENT}]}" =~ (@.*) ]]; then
     __go_debug "last char is '@' so loading possible versions"
     local repo
-    repo="${lastParam}"
-    if [[ "${repo}" =~ '(github\.com\/([a-zA-Z0-9\-\_]+)\/([a-zA-Z0-9\-\_]+))' ]]; then
-      __go_debug "repo is github.com format"
-      repo=$(cut -d'/' -f1 -f2 -f3 <<<"${repo}")
-    fi
-    repo=${repo%.git*}
+    repo="$(__parse_repo "${lastParam%"${match[1]}"}")"
 
     nested=${lastParam##"${repo}"}
     nested=${nested##.git}
     nested=${nested##/}
-    if [ "${nested}" = "${lastParam}" ]; then
+    if [[ "${nested}" =~ ^@ ]]; then
       nested=""
     else
       nested="${nested%@*}/"
@@ -62,17 +57,21 @@ _go() {
     prefix="${lastParam%@*}@"
     __go_debug "prefix ${prefix}"
 
-    local -a completions
-    local refs
+    # Create all process substitutions at once and collect file descriptors
+    local -a fd_processes=()
     refs=$(git ls-remote --heads --tags "https://${repo}" | cut -f 2)
-    for ref in ${(f)refs}; do
-      if [[ "${ref}" =~ ^refs/heads/ ]]; then
-        completions+=("${ref##refs/heads/}")
-        __go_debug "found: ${ref}"
-      elif [[ "${ref}" =~ ^refs/tags/"${nested}" ]]; then
-        completions+=("${ref##refs/tags/"${nested}"}")
-        __go_debug "found: ${ref##refs/tags/}"
-      fi
+      for ref in ${(f)refs}; do
+        exec {fd}< <(__process_ref "$ref" "$nested")
+        fd_processes+=($fd)
+    done
+
+    local -a completions
+    # Collect all output at once
+    for fd in ${fd_processes}; do
+        if IFS= read -ru "$fd" item; then
+          completions+=("${item}")
+        fi
+        exec {fd}<&-  # Close the file descriptor
     done
 
     compadd -p "${prefix}" -S '' "${completions[@]}"
@@ -111,29 +110,25 @@ _go() {
   fi
   __go_debug "prefix: ${prefix}"
 
-  local -a completions
+  # Create all process substitutions at once and collect file descriptors
+  local -a fd_processes=()
   for item in ${modcache}/*/; do
-    item=$(basename "${item}")
-    item=$(sed 's/@.*/@/g' <<<"${item}")
-    item=$(sed 's/!(.)/\U\0/g' <<<"${item}")
-    item=$(__from_go_dirname "${item}")
+      exec {fd}< <(__process_item "$item")
+      fd_processes+=($fd)
+  done
 
-    if [ "${item[-1]}" != "@" ]; then
-      item="${item}/"
-    fi
-
-    found=false
-    for item2 in ${completions}; do
-        if [ "${item}" = "${item2}" ]; then
-          found=true
-          break
-        fi
-    done
-
-    if [ "${found}" != true ]; then
-      __go_debug "found: ${item}"
-      completions+=("${item}")
-    fi
+  local -A seen
+  local -a completions
+  # Collect all output at once
+  for fd in ${fd_processes}; do
+      if IFS= read -ru "$fd" item; then
+          if (( ${+seen[$item]} == 0 )); then
+              seen[$item]=1
+              __go_debug "found: ${item}"
+              completions+=("${item}")
+          fi
+      fi
+      exec {fd}<&-  # Close the file descriptor
   done
 
   compadd -p "${prefix}" -S '' "${completions[@]}"
@@ -143,38 +138,66 @@ _go() {
   return $ret
 }
 
-# take any string as input and replace !<char> with Char
-__from_go_dirname() {
-  local result
-  local toUpper
-  toUpper=false
-
-  for (( i=0; i<=${#1}; i++ )); do
-    char="${1:$i:1}"
-    if [ "$char" = "!" ]; then
-      toUpper=true
-    elif [ "$toUpper" = true ]; then
-      result="${result}${char:u}"
-      toUpper=false
-    else
-      result="${result}${char}"
-      toUpper=false
+# parse repo information from the current state of autocompletion
+__parse_repo() {
+  repo="${1}"
+  __go_debug "received repo ${repo}"
+  if [[ "${repo}" =~ '(github\.com\/([a-zA-Z0-9\-\_]+)\/([a-zA-Z0-9\-\_]+))' ]]; then
+    __go_debug "repo is github.com format"
+    repo=$(cut -d'/' -f1 -f2 -f3 <<<"${repo}")
     fi
-  done
-  echo "$result"
+  repo=${repo%.git*}
+  print -r -- "$repo"
 }
 
-# take any string as input and replace !<char> with Char
-__to_go_dirname() {
-  local result
-  for (( i=0; i<=${#1}; i++ )); do
-    char="${1:$i:1}"
-    if [[ "$char" =~ [A-Z] ]]; then
-      result="${result}!${char:l}"
-    else
-      result="${result}${char}"
-    fi
+# process refs by parsing refs/heads or refs/tags
+__process_ref() {
+  ref="${1}"
+  nested="${2}"
+  if [[ "${ref}" =~ ^refs/heads/ ]]; then
+    print -r -- "${ref##refs/heads/}"
+  elif [[ "${ref}" =~ ^refs/tags/"${nested}" ]]; then
+    print -r -- "${ref##refs/tags/"${nested}"}"
+  fi
+}
+
+# process item that is read in the directory.
+# e.g. github.com/!some!package@x.y.z by
+# 1) take the basename: some!package@x.y.z
+# 2) strip the version information: some!package@
+# 3) parse from go dirname: SomePackage@
+__process_item() {
+  item="${1}"
+  item=$(basename "${item}") # take only the last part
+  item=$(sed 's/@.*/@/g' <<<"${item}") # strip version @x.y.z. information
+  item=$(__from_go_dirname "${item}") # transform to go filename mode
+
+  if [ "${item[-1]}" != "@" ]; then
+    item="${item}/" # differentiate with version
+  fi
+
+  print -r -- "$item"
+}
+
+# take any string as input and replace !lowercase with uppercase, e.g. !hello!world with HelloWorld
+__from_go_dirname() {
+  local input="$1"
+  local char
+  while [[ "$input" =~ !(.) ]]; do
+    input="${input/!${match[1]}/${match[1]:u}}"
   done
-  echo "$result"
+
+  print -r -- "$input"
+}
+
+# take any string as input and replace Uppercase with !lowercase, e.g. HelloWorld to !hello!world
+__to_go_dirname() {
+  local input="$1"
+  local char
+  while [[ "$input" =~ ([A-Z]) ]]; do
+    input="${input/${match[1]}/!${match[1]:l}}"
+  done
+
+  print -r -- "$input"
 }
 
